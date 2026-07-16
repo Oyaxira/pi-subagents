@@ -1908,6 +1908,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const run = executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
+			acceptance: { level: "none", reason: "resume compatibility gate" },
 			agentConfig: makeAgent("worker", {
 				model: "openai/gpt-5-mini:high",
 				fallbackModels: ["anthropic/claude-sonnet-4:low"],
@@ -1948,6 +1949,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(descriptor.fallbackModels, ["anthropic/claude-sonnet-4:low"]);
 		assert.equal(descriptor.cwd, tempDir);
 		assert.equal(descriptor.sessionDir, path.join(sessionRoot, `async-${id}`));
+		assert.deepEqual(descriptor.acceptance, { level: "none", reason: "resume compatibility gate" });
+		assert.equal(Object.hasOwn(descriptor.acceptance, "explicit"), false);
 		assert.equal(Object.hasOwn(descriptor, "task"), false);
 		if (process.platform !== "win32") assert.equal(fs.statSync(descriptorPath).mode & 0o777, 0o600);
 

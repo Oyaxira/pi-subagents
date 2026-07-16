@@ -14,6 +14,7 @@ import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_FOREGROUND_COMPLETE_EVENT } fro
 function createPi(currentSessionId = "session-1", registerOptions: RegisterSubagentNotifyOptions = {}) {
 	const events = new EventEmitter();
 	const sent: Array<{ message: unknown; options: unknown }> = [];
+	const state = { currentSessionId };
 	const pi = {
 		events,
 		sendMessage(message: unknown, options: unknown) {
@@ -23,26 +24,27 @@ function createPi(currentSessionId = "session-1", registerOptions: RegisterSubag
 
 	// Formatting-focused tests run with batching disabled so single completions
 	// emit synchronously. Batching behavior is covered by the dedicated suite below.
-	registerSubagentNotify(pi as never, { currentSessionId }, { batchConfig: { enabled: false }, ...registerOptions });
+	const dispose = registerSubagentNotify(pi as never, state, { batchConfig: { enabled: false }, ...registerOptions });
 
-	return { events, sent };
+	return { events, sent, state, dispose };
 }
 
 function createBatchingPi(clock: ReturnType<typeof createFakeClock>, currentSessionId = "session-a") {
 	const events = new EventEmitter();
 	const sent: Array<{ message: unknown; options: unknown }> = [];
+	const state = { currentSessionId };
 	const pi = {
 		events,
 		sendMessage(message: unknown, options: unknown) {
 			sent.push({ message, options });
 		},
 	};
-	registerSubagentNotify(pi as never, { currentSessionId }, {
+	const dispose = registerSubagentNotify(pi as never, state, {
 		batchConfig: { enabled: true, debounceMs: 150, maxWaitMs: 1000, stragglerDebounceMs: 75, stragglerMaxWaitMs: 400, stragglerWindowMs: 2000 },
 		timers: clock.api,
 		now: clock.now,
 	});
-	return { events, sent };
+	return { events, sent, state, dispose };
 }
 
 interface FakeJob {
@@ -317,6 +319,37 @@ describe("registerSubagentNotify", () => {
 		assert.equal(sent.length, 1);
 		assert.match((sent[0]!.message as { content: string }).content, /^Background task completed: \*\*alpha\*\*/);
 		assert.doesNotMatch((sent[0]!.message as { content: string }).content, /boom/);
+	});
+
+	it("keeps registrations independent and disposes only their own listeners", () => {
+		const first = createPi("session-a");
+		const second = createPi("session-b");
+		first.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "shared-id", sessionId: "session-a" }));
+		second.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "shared-id", sessionId: "session-b" }));
+		assert.equal(first.sent.length, 1);
+		assert.equal(second.sent.length, 1);
+
+		second.dispose();
+		second.dispose();
+		first.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "first-still-active", sessionId: "session-a" }));
+		second.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "second-disposed", sessionId: "session-b" }));
+		assert.equal(first.sent.length, 2);
+		assert.equal(second.sent.length, 1);
+	});
+
+	it("cancels held completions on disposal and never sends them into a rebound session", () => {
+		const clock = createFakeClock();
+		const disposed = createBatchingPi(clock, "session-a");
+		disposed.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "held-disposed", sessionId: "session-a" }));
+		disposed.dispose();
+		clock.advance(150);
+		assert.equal(disposed.sent.length, 0);
+
+		const rebound = createBatchingPi(clock, "session-a");
+		rebound.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completionResult({ id: "held-rebound", sessionId: "session-a" }));
+		rebound.state.currentSessionId = "session-b";
+		clock.advance(150);
+		assert.equal(rebound.sent.length, 0);
 	});
 });
 

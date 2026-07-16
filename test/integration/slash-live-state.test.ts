@@ -8,6 +8,7 @@ interface SlashLiveStateModule {
 	finalizeSlashResult?: typeof import("../../src/slash/slash-live-state.ts").finalizeSlashResult;
 	getSlashRenderableSnapshot?: typeof import("../../src/slash/slash-live-state.ts").getSlashRenderableSnapshot;
 	restoreSlashFinalSnapshots?: typeof import("../../src/slash/slash-live-state.ts").restoreSlashFinalSnapshots;
+	createSlashLiveState?: typeof import("../../src/slash/slash-live-state.ts").createSlashLiveState;
 }
 
 let applySlashUpdate: SlashLiveStateModule["applySlashUpdate"];
@@ -16,6 +17,7 @@ let clearSlashSnapshots: SlashLiveStateModule["clearSlashSnapshots"];
 let finalizeSlashResult: SlashLiveStateModule["finalizeSlashResult"];
 let getSlashRenderableSnapshot: SlashLiveStateModule["getSlashRenderableSnapshot"];
 let restoreSlashFinalSnapshots: SlashLiveStateModule["restoreSlashFinalSnapshots"];
+let createSlashLiveState: SlashLiveStateModule["createSlashLiveState"];
 let available = true;
 try {
 	({
@@ -25,12 +27,25 @@ try {
 		finalizeSlashResult,
 		getSlashRenderableSnapshot,
 		restoreSlashFinalSnapshots,
+		createSlashLiveState,
 	} = await import("../../src/slash/slash-live-state.ts") as SlashLiveStateModule);
 } catch {
 	available = false;
 }
 
 describe("slash live state", { skip: !available ? "slash-live-state.ts not importable" : undefined }, () => {
+	it("keeps runtime-owned snapshots independent", () => {
+		const first = createSlashLiveState!();
+		const second = createSlashLiveState!();
+		const firstDetails = first.buildInitialResult("shared-request", { agent: "worker", task: "first" });
+		const secondDetails = second.buildInitialResult("shared-request", { agent: "reviewer", task: "second" });
+
+		first.clear();
+		assert.equal(first.getRenderableSnapshot(firstDetails).version, 0);
+		assert.equal(second.getRenderableSnapshot(secondDetails).version > 0, true);
+		assert.equal(second.getRenderableSnapshot(secondDetails).result.details.results[0]?.agent, "reviewer");
+	});
+
 	it("streams progress updates into the visible slash snapshot", () => {
 		clearSlashSnapshots!();
 		const details = buildSlashInitialResult!("req-1", {

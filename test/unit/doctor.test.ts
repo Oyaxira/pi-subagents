@@ -48,7 +48,7 @@ function makeChain(name: string, source: ChainConfig["source"]): ChainConfig {
 }
 
 describe("buildDoctorReport", () => {
-	it("formats a bounded successful environment summary", () => {
+	it("formats a bounded successful root-runtime summary", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-success-"));
 		try {
 			const paths = {
@@ -65,6 +65,7 @@ describe("buildDoctorReport", () => {
 				state: makeState(root),
 				currentSessionFile: path.join(root, "sessions", "parent.jsonl"),
 				currentSessionId: "session-abc123",
+				isSubagentProcess: false,
 				orchestratorTarget: "subagent-chat-abc123",
 				expandTilde: (value) => value.replace(/^~\//, `${root}/home/`),
 				paths,
@@ -106,6 +107,8 @@ describe("buildDoctorReport", () => {
 			assert.match(report, /- agents: total 4 \(builtin 1, package 0, user 1, project 2\)/);
 			assert.match(report, /- chains: total 2 \(builtin 0, package 0, user 1, project 1\)/);
 			assert.match(report, /- skills: total 2 \(project 1, user-package 1\)/);
+			assert.match(report, /- parent session: set \(session-abc123\)/);
+			assert.match(report, /- subagent process: no/);
 			assert.match(report, /- bridge: active/);
 			assert.match(report, /- supervisor channel: available \(native:pi-subagents-supervisor-channel\)/);
 			assert.doesNotMatch(report, /Companion packages/);

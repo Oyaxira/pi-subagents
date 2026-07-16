@@ -1126,6 +1126,7 @@ export function executeAsyncSingle(
 		mode: "single",
 		async: true,
 	});
+	const recoveryAcceptance = params.acceptance ?? agentConfig.defaultAcceptance;
 	const recoveryDescriptor: SteeringRecoveryDescriptor = {
 		version: 1,
 		sourceRunId: id,
@@ -1150,7 +1151,7 @@ export function executeAsyncSingle(
 		...(agentConfig.memory ? { memory: { ...agentConfig.memory } } : {}),
 		...(outputPath ? { outputPath } : {}),
 		outputMode,
-		...(resolvedAcceptance ? { acceptance: resolvedAcceptance } : {}),
+		...(recoveryAcceptance !== undefined ? { acceptance: recoveryAcceptance } : {}),
 		...(controlConfig ? { controlConfig } : {}),
 		...(deadlineAt !== undefined ? { absoluteDeadlineAt: deadlineAt } : {}),
 		...(params.turnBudget ? { initialTurnBudget: params.turnBudget } : {}),

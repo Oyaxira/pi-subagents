@@ -36,14 +36,14 @@ import { registerMainWatchdog } from "../watchdog/register-main.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { createNativeSupervisorChannel } from "../intercom/native-supervisor-channel.ts";
 import { registerSubagentRpcBridge } from "./rpc.ts";
-import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
+import { createSlashLiveState, resolveSlashMessageDetails, type SlashLiveState, type SlashMessageDetails } from "../slash/slash-live-state.ts";
 import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import { resolveWaitToolConfig } from "../runs/background/subagent-wait.ts";
 import { registerWaitTool } from "../runs/background/wait-tool.ts";
 import { drainOutstandingWork } from "../runs/background/auto-drain.ts";
 import registerSubagentNotify, { parseSubagentNotifyContent, type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { formatSteeringNotice, handleSubagentSteeringNotice, SUBAGENT_STEERING_MESSAGE_TYPE, type SubagentSteeringMessageDetails } from "./steering-notices.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { buildSubagentToolDescription } from "./tool-description.ts";
@@ -68,6 +68,7 @@ import {
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
 	type SubagentControlMessageDetails,
 } from "./control-notices.ts";
+import { beginRuntimeLifecycle } from "./runtime-lifecycle.ts";
 
 export { loadConfig } from "./config.ts";
 
@@ -147,10 +148,6 @@ function isSlashResultError(result: { details?: Details }): boolean {
 	return result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false;
 }
 
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes("Extension context no longer active");
-}
-
 function rebuildSlashResultContainer(
 	container: Container,
 	result: AgentToolResult<Details>,
@@ -169,11 +166,12 @@ function createSlashResultComponent(
 	details: SlashMessageDetails,
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
+	slashLiveState: SlashLiveState,
 ): Container {
 	const container = new Container();
 	let lastVersion = -1;
 	container.render = (width: number): string[] => {
-		const snapshot = getSlashRenderableSnapshot(details);
+		const snapshot = slashLiveState.getRenderableSnapshot(details);
 		if (snapshot.version !== lastVersion || isSlashResultRunning(snapshot.result)) {
 			lastVersion = snapshot.version;
 			rebuildSlashResultContainer(container, snapshot.result, options, theme);
@@ -215,16 +213,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
 		return;
 	}
-	const globalStore = globalThis as Record<string, unknown>;
-	const runtimeCleanupStoreKey = "__piSubagentRuntimeCleanup";
-	const previousRuntimeCleanup = globalStore[runtimeCleanupStoreKey];
-	if (typeof previousRuntimeCleanup === "function") {
-		try {
-			previousRuntimeCleanup();
-		} catch {
-			// Best effort cleanup for stale timers from an older reload.
-		}
-	}
+	const lifecycle = beginRuntimeLifecycle(pi.events as object);
+	const slashLiveState = createSlashLiveState();
+	lifecycle.add(() => slashLiveState.clear());
 
 	ensureAccessibleDir(RESULTS_DIR);
 	ensureAccessibleDir(ASYNC_DIR);
@@ -258,30 +249,32 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clear: () => {},
 		},
 	};
+	lifecycle.add(() => {
+		if (state.poller) clearInterval(state.poller);
+		state.poller = null;
+		clearPendingForegroundControlNotices(state);
+		for (const timer of state.cleanupTimers.values()) clearTimeout(timer);
+		state.cleanupTimers.clear();
+		state.asyncJobs.clear();
+		state.fleetJobs.clear();
+		try {
+			if (state.lastUiContext?.hasUI) state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);
+		} catch {}
+	});
 
 	const supervisorChannel = createNativeSupervisorChannel(pi, state);
+	lifecycle.add(() => supervisorChannel.dispose());
 	const mainWatchdog = registerMainWatchdog(pi);
+	lifecycle.add(() => mainWatchdog.dispose());
 	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
 		pi,
 		state,
 		RESULTS_DIR,
 		10 * 60 * 1000,
 	);
+	lifecycle.add(stopResultWatcher);
 	startResultWatcher();
 	primeExistingResults();
-
-	const runtimeCleanup = () => {
-		mainWatchdog.dispose();
-		stopResultWatcher();
-		scheduledRunManager.stop();
-		supervisorChannel.dispose();
-		clearPendingForegroundControlNotices(state);
-		if (state.poller) {
-			clearInterval(state.poller);
-			state.poller = null;
-		}
-	};
-	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
 	const { ensurePoller, refreshWidget, handleStarted, handleComplete, resetJobs, restoreActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR, {
 		widgetEnabled: config.asyncWidget !== false,
@@ -300,6 +293,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return executorExecute(randomUUID(), params, signal, undefined, ctx);
 		},
 	});
+	lifecycle.add(() => scheduledRunManager.stop());
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -318,7 +312,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
-		return createSlashResultComponent(details, options, theme);
+		return createSlashResultComponent(details, options, theme, slashLiveState);
 	});
 
 	pi.registerMessageRenderer<undefined>(SLASH_TEXT_RESULT_TYPE, (message, _options, _theme) => {
@@ -386,12 +380,20 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		execute: (id, params, signal, onUpdate, ctx) =>
 			executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
 	});
+	lifecycle.add(() => {
+		slashBridge.cancelAll();
+		slashBridge.dispose();
+	});
 
 	const promptTemplateBridge = registerPromptTemplateDelegationBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
 		execute: (requestId, params, signal, ctx, onUpdate) =>
 			executeSubagentCollapsed(requestId, params, signal, onUpdate, ctx),
+	});
+	lifecycle.add(() => {
+		promptTemplateBridge.cancelAll();
+		promptTemplateBridge.dispose();
 	});
 
 	const rpcBridge = registerSubagentRpcBridge({
@@ -477,26 +479,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		await drainOutstandingWork({ state, events: pi.events });
 	});
 
-	registerSlashCommands(pi, state);
+	registerSlashCommands(pi, state, slashLiveState);
 
-	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
-	const controlNoticeSeenStoreKey = "__piSubagentVisibleControlNotices";
-	const previousEventUnsubscribes = globalStore[eventUnsubscribeStoreKey];
-	if (Array.isArray(previousEventUnsubscribes)) {
-		for (const unsubscribe of previousEventUnsubscribes) {
-			if (typeof unsubscribe !== "function") continue;
-			try {
-				unsubscribe();
-			} catch {
-				// Best effort cleanup for stale handlers from an older reload.
-			}
-		}
-	}
-	registerSubagentNotify(pi, state, { batchConfig: config.completionBatch });
+	lifecycle.add(registerSubagentNotify(pi, state, {
+		batchConfig: config.completionBatch,
+		seen: lifecycle.notifySeen,
+	}));
 
-	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
-	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
-	globalStore[controlNoticeSeenStoreKey] = visibleControlNotices;
+	const visibleControlNotices = lifecycle.visibleControlNotices;
 	const controlEventHandler = (payload: unknown) => {
 		handleSubagentControlNotice({
 			pi,
@@ -514,8 +504,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 		pi.events.on(SUBAGENT_STEERING_NOTICE_EVENT, steeringNoticeHandler),
 		rpcBridge.dispose,
-	];
-	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
+	].filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === "function");
+	lifecycle.add(() => {
+		for (const unsubscribe of eventUnsubscribes) unsubscribe();
+	});
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName !== "subagent") return;
@@ -542,24 +534,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.subagentSpawns = { sessionId: state.currentSessionId, count: 0 };
-		// Set PI_SUBAGENT_PARENT_SESSION for permission-system forwarding.
-		// Only set in the root session (the interactive UI session), not in
-		// child subagent processes — children inherit the parent's value
-		// through the process environment at spawn time and must not overwrite
-		// it with their own session identity.
-		if (!process.env[SUBAGENT_CHILD_ENV]) {
-			const sessionId = ctx.sessionManager.getSessionId();
-			if (sessionId) {
-				process.env[SUBAGENT_PARENT_SESSION_ENV] = sessionId;
-			}
-		}
 		state.lastUiContext = ctx;
 		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
 		resetJobs(ctx);
 		restoreActiveJobs(ctx);
 		scheduledRunManager.bindSession(ctx);
-		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
+		slashLiveState.restoreFinalSnapshots(ctx.sessionManager.getEntries());
 		primeExistingResults();
 	};
 
@@ -570,42 +551,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
-		delete process.env[SUBAGENT_PARENT_SESSION_ENV];
-		for (const unsubscribe of eventUnsubscribes) {
-			try {
-				unsubscribe();
-			} catch {
-				// Best effort cleanup during shutdown.
-			}
-		}
-		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {
-			delete globalStore[eventUnsubscribeStoreKey];
-		}
-		stopResultWatcher();
-		scheduledRunManager.stop();
-		if (state.poller) clearInterval(state.poller);
-		state.poller = null;
-		clearPendingForegroundControlNotices(state);
-		for (const timer of state.cleanupTimers.values()) {
-			clearTimeout(timer);
-		}
-		state.cleanupTimers.clear();
-		state.asyncJobs.clear();
-		clearSlashSnapshots();
-		slashBridge.cancelAll();
-		slashBridge.dispose();
-		promptTemplateBridge.cancelAll();
-		promptTemplateBridge.dispose();
-		supervisorChannel.dispose();
-		if (globalStore[runtimeCleanupStoreKey] === runtimeCleanup) {
-			delete globalStore[runtimeCleanupStoreKey];
-		}
-		try {
-			if (state.lastUiContext?.hasUI) {
-				state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);
-			}
-		} catch (error) {
-			if (!isStaleExtensionContextError(error)) throw error;
-		}
+		lifecycle.dispose();
 	});
 }

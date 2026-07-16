@@ -175,8 +175,8 @@ describe("buildPiArgs session wiring", () => {
 		assert.equal(env[SUBAGENT_PARENT_SESSION_ENV], "direct-parent");
 	});
 
-	it("falls back to inherited parent session env for permission forwarding", () => {
-		process.env.PI_SUBAGENT_PARENT_SESSION = "inherited-parent";
+	it("does not inherit another root runtime's parent session env", () => {
+		process.env.PI_SUBAGENT_PARENT_SESSION = "other-root-parent";
 		const { env } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
@@ -185,7 +185,7 @@ describe("buildPiArgs session wiring", () => {
 			inheritSkills: false,
 		});
 
-		assert.equal(env[SUBAGENT_PARENT_SESSION_ENV], "inherited-parent");
+		assert.equal(env[SUBAGENT_PARENT_SESSION_ENV], "");
 	});
 
 	it("passes the effective wait-tool setting explicitly to children", () => {

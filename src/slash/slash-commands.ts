@@ -26,11 +26,9 @@ import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.
 import { registerPromptWorkflowCommands } from "./prompt-workflows.ts";
 import { openSubagentFleet } from "../tui/fleet.ts";
 import {
-	applySlashUpdate,
-	buildSlashInitialResult,
-	failSlashResult,
-	finalizeSlashResult,
+	defaultSlashLiveState,
 	resolveSlashMessageDetails,
+	type SlashLiveState,
 } from "./slash-live-state.ts";
 import {
 	SLASH_RESULT_TYPE,
@@ -556,6 +554,7 @@ async function requestSlashRun(
 	ctx: ExtensionContext,
 	requestId: string,
 	params: SubagentParamsLike,
+	slashLiveState: SlashLiveState,
 ): Promise<SlashSubagentResponse> {
 	return new Promise((resolve, reject) => {
 		let done = false;
@@ -588,7 +587,7 @@ async function requestSlashRun(
 			if (done || !data || typeof data !== "object") return;
 			const update = data as SlashSubagentUpdate;
 			if (update.requestId !== requestId) return;
-			applySlashUpdate(requestId, update);
+			slashLiveState.applyUpdate(requestId, update);
 			if (!ctx.hasUI) return;
 			const tool = update.currentTool ? ` ${update.currentTool}` : "";
 			const count = update.toolCount ?? 0;
@@ -686,10 +685,11 @@ async function runSlashSubagent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	params: SubagentParamsLike,
+	slashLiveState: SlashLiveState,
 ): Promise<void> {
 	if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
-	const initialDetails = buildSlashInitialResult(requestId, params);
+	const initialDetails = slashLiveState.buildInitialResult(requestId, params);
 	const initialText = extractSlashMessageText(initialDetails.result.content) || "Running subagent...";
 	pi.sendMessage({
 		customType: SLASH_RESULT_TYPE,
@@ -700,8 +700,8 @@ async function runSlashSubagent(
 	persistSlashSessionSnapshot(ctx);
 
 	try {
-		const response = await requestSlashRun(pi, ctx, requestId, params);
-		const finalDetails = finalizeSlashResult(response);
+		const response = await requestSlashRun(pi, ctx, requestId, params, slashLiveState);
+		const finalDetails = slashLiveState.finalizeResult(response);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: buildSlashExportText(response),
@@ -717,7 +717,7 @@ async function runSlashSubagent(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const failedDetails = failSlashResult(requestId, params, message);
+		const failedDetails = slashLiveState.failResult(requestId, params, message);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: `## Subagent result\n\n${message}`,
@@ -1135,12 +1135,14 @@ export function buildChainExpressionSteps(
 export function registerSlashCommands(
 	pi: ExtensionAPI,
 	state: SubagentState,
+	slashLiveState: SlashLiveState = defaultSlashLiveState,
 ): void {
+	const run = (ctx: ExtensionContext, params: SubagentParamsLike) => runSlashSubagent(pi, ctx, params, slashLiveState);
 	let fleetOpen = false;
 	const showFleet = async (ctx: ExtensionContext) => {
 		state.lastUiContext = ctx;
 		if (!ctx.hasUI) {
-			await runSlashSubagent(pi, ctx, { action: "status", view: "fleet" });
+			await run(ctx, { action: "status", view: "fleet" });
 			return;
 		}
 		if (fleetOpen) {
@@ -1181,7 +1183,7 @@ export function registerSlashCommands(
 			if (inline.model) params.model = inline.model;
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await run(ctx, params);
 		},
 	});
 
@@ -1195,7 +1197,7 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { chain: built.chain, task: built.task, clarify: false, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await run(ctx, params);
 		},
 	});
 
@@ -1225,7 +1227,7 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, clarify: false, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await run(ctx, params);
 		},
 	});
 
@@ -1249,7 +1251,7 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { tasks, clarify: false, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await run(ctx, params);
 		},
 	});
 
@@ -1263,7 +1265,7 @@ export function registerSlashCommands(
 	pi.registerCommand("subagents-doctor", {
 		description: "Show subagent diagnostics",
 		handler: async (_args, ctx) => {
-			await runSlashSubagent(pi, ctx, { action: "doctor" });
+			await run(ctx, { action: "doctor" });
 		},
 	});
 
@@ -1282,7 +1284,7 @@ export function registerSlashCommands(
 		handler: async (args, ctx) => {
 			const id = args.trim();
 			if (id) {
-				await runSlashSubagent(pi, ctx, { action: "stop", id });
+				await run(ctx, { action: "stop", id });
 				return;
 			}
 
@@ -1314,16 +1316,16 @@ export function registerSlashCommands(
 			);
 			if (!result?.confirmed || !result.target) return;
 			if (result.target.kind === "scheduled") {
-				await runSlashSubagent(pi, ctx, { action: "schedule-cancel", id: result.target.id });
+				await run(ctx, { action: "schedule-cancel", id: result.target.id });
 				return;
 			}
-			await runSlashSubagent(pi, ctx, { action: "stop", id: result.target.id });
+			await run(ctx, { action: "stop", id: result.target.id });
 		},
 	});
 
 	registerPromptWorkflowCommands({
 		pi,
-		run: (params, ctx) => runSlashSubagent(pi, ctx, params),
+		run: (params, ctx) => run(ctx, params),
 	});
 
 	pi.registerCommand("subagents-models", {
@@ -1332,7 +1334,7 @@ export function registerSlashCommands(
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			if (!trimmed) {
-				await runSlashSubagent(pi, ctx, { action: "models" });
+				await run(ctx, { action: "models" });
 				return;
 			}
 			const parts = trimmed.split(/\s+/).filter(Boolean);
@@ -1345,7 +1347,7 @@ export function registerSlashCommands(
 				ctx.ui.notify(`Unknown builtin agent: ${agent}`, "error");
 				return;
 			}
-			await runSlashSubagent(pi, ctx, { action: "models", agent });
+			await run(ctx, { action: "models", agent });
 		},
 	});
 

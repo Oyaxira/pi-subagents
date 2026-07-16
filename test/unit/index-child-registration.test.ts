@@ -19,6 +19,97 @@ function parentToolEnv(): NodeJS.ProcessEnv {
 }
 
 describe("subagent extension child mode", () => {
+	it("isolates coexisting runtimes and cleans up only same-event-bus reloads", () => {
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-runtime-isolation-"));
+		try {
+			const configDir = path.join(agentDir, "extensions", "subagent");
+			fs.mkdirSync(configDir, { recursive: true });
+			fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({
+				completionBatch: { enabled: true, debounceMs: 40, maxWaitMs: 80 },
+			}), "utf-8");
+			const script = String.raw`
+				import registerSubagentExtension from "./index.ts";
+				class EventBus {
+					listeners = new Map();
+					on(name, handler) {
+						const handlers = this.listeners.get(name) ?? new Set();
+						handlers.add(handler);
+						this.listeners.set(name, handlers);
+						return () => handlers.delete(handler);
+					}
+					emit(name, payload) {
+						for (const handler of [...(this.listeners.get(name) ?? [])]) handler(payload);
+					}
+				}
+				function makePi(events) {
+					const lifecycleHandlers = new Map();
+					const sent = [];
+					const tools = [];
+					const pi = new Proxy({
+						events,
+						on(name, handler) { lifecycleHandlers.set(name, handler); },
+						registerTool(tool) { tools.push(tool); },
+						registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+						sendMessage(message, options) { sent.push({ message, options }); },
+						getSessionName() { return undefined; },
+						getAllTools() { return tools; },
+					}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
+					return { pi, lifecycleHandlers, sent };
+				}
+				function context(sessionId) {
+					return {
+						cwd: process.cwd(), hasUI: false,
+						ui: { setWidget() {}, setStatus() {}, notify() {}, requestRender() {}, theme: { fg(_n, t) { return t; }, bg(_n, t) { return t; }, bold(t) { return t; } } },
+						sessionManager: { getSessionId() { return sessionId; }, getSessionFile() { return null; }, getEntries() { return []; } },
+						modelRegistry: { getAvailable() { return []; } },
+					};
+				}
+				function notifyCount(runtime) { return runtime.sent.filter((entry) => entry.message?.customType === "subagent-notify").length; }
+				function completion(id, sessionId, success = false) { return { id, sessionId, agent: "worker", success, summary: success ? "done" : "failed", exitCode: success ? 0 : 1, timestamp: Date.now() }; }
+
+				process.env.PI_SUBAGENT_PARENT_SESSION = "sentinel-parent";
+				const busA = new EventBus();
+				const busB = new EventBus();
+				const a = makePi(busA);
+				const b = makePi(busB);
+				registerSubagentExtension(a.pi);
+				a.lifecycleHandlers.get("session_start")?.({}, context("session-a"));
+				registerSubagentExtension(b.pi);
+				b.lifecycleHandlers.get("session_start")?.({}, context("session-b"));
+				busA.emit("subagent:async-complete", completion("a-failure", "session-a"));
+				busB.emit("subagent:async-complete", completion("b-success", "session-b", true));
+				await new Promise((resolve) => setTimeout(resolve, 120));
+				if (notifyCount(a) !== 1 || notifyCount(b) !== 1) throw new Error("distinct runtimes interfered: " + notifyCount(a) + "/" + notifyCount(b));
+				b.lifecycleHandlers.get("session_shutdown")?.({});
+				busA.emit("subagent:async-complete", completion("a-success", "session-a", true));
+				await new Promise((resolve) => setTimeout(resolve, 120));
+				if (notifyCount(a) !== 2) throw new Error("shutting down B stopped A");
+				if (process.env.PI_SUBAGENT_PARENT_SESSION !== "sentinel-parent") throw new Error("root lifecycle mutated parent-session env");
+
+				const sharedBus = new EventBus();
+				const oldRuntime = makePi(sharedBus);
+				registerSubagentExtension(oldRuntime.pi);
+				oldRuntime.lifecycleHandlers.get("session_start")?.({}, context("session-c"));
+				sharedBus.emit("subagent:async-complete", completion("held-old", "session-c", true));
+				const replacement = makePi(sharedBus);
+				registerSubagentExtension(replacement.pi);
+				replacement.lifecycleHandlers.get("session_start")?.({}, context("session-c"));
+				oldRuntime.lifecycleHandlers.get("session_shutdown")?.({});
+				await new Promise((resolve) => setTimeout(resolve, 120));
+				if (notifyCount(oldRuntime) !== 0) throw new Error("disposed old batcher emitted after reload");
+				sharedBus.emit("subagent:async-complete", completion("replacement", "session-c"));
+				if (notifyCount(oldRuntime) !== 0 || notifyCount(replacement) !== 1) throw new Error("same-bus reload kept stale listeners");
+				if (process.env.PI_SUBAGENT_PARENT_SESSION !== "sentinel-parent") throw new Error("reload cleanup changed parent-session env");
+				replacement.lifecycleHandlers.get("session_shutdown")?.({});
+			`;
+			const env = parentToolEnv();
+			env.PI_CODING_AGENT_DIR = agentDir;
+			execFileSync(process.execPath, ["--experimental-transform-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", script], { cwd: projectRoot, env, stdio: "pipe" });
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("collapses tool detail before direct subagent tool execution", () => {
 		const script = String.raw`
 			import registerSubagentExtension from "./index.ts";

@@ -281,7 +281,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const encodedChildWatchdog = encodeChildWatchdogConfig(input.childWatchdog);
 	if (encodedChildWatchdog) env[CHILD_WATCHDOG_CONFIG_ENV] = encodedChildWatchdog;
 
-	env[SUBAGENT_PARENT_SESSION_ENV] = input.parentSessionId ?? process.env[SUBAGENT_PARENT_SESSION_ENV] ?? "";
+	env[SUBAGENT_PARENT_SESSION_ENV] = input.parentSessionId ?? "";
 
 	return { args, env, tempDir, toolDiagnosticPath };
 }
