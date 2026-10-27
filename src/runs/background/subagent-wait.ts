@@ -29,6 +29,10 @@
  * or a stuck child would stall the loop until the timeout. Attention runs are
  * reported so the caller can inspect / nudge / resume / interrupt them.
  *
+ * The user comes first: when they send a message while the wait is blocking,
+ * the wait returns at once so the parent can answer. The runs keep going, and
+ * their completions still wake the parent.
+ *
  * Wake mechanism: when given Pi's event bus (`deps.events`), `subagent_wait`
  * subscribes to the subagent completion/control channels and wakes the instant
  * any fires, rather than waiting out a fixed poll interval. A poll still runs
@@ -98,6 +102,8 @@ export interface SubagentWaitDeps {
 	enabled?: boolean;
 	/** Injectable sleep for tests. */
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+	/** True while the user has a message queued for this session (Pi's pending messages). */
+	hasPendingUserInput?: () => boolean;
 	/** Internal auto-drain mode waits through needs-attention states. */
 	stopOnAttention?: boolean;
 	/** Internal auto-drain mode surfaces failed terminal subagent runs as errors. */
@@ -275,6 +281,18 @@ function summarizeTerminalRuns(runs: AsyncRunSummary[], providerFinishedCount = 
 	return parts.join(", ");
 }
 
+function userSpoke(deps: SubagentWaitDeps): boolean {
+	try {
+		return deps.hasPendingUserInput?.() === true;
+	} catch {
+		return false;
+	}
+}
+
+function userInterruptedResult(elapsedMs: number, stillActive: string): AgentToolResult<Details> {
+	return result(`Stopped waiting after ${formatDuration(elapsedMs)} because the user sent a message. Still running: ${stillActive}. Do not wait again now: reply to the user, and if their message is not shown yet, end your turn so it is delivered. Finished runs will notify you.`);
+}
+
 function result(text: string, isError = false): AgentToolResult<Details> {
 	return {
 		content: [{ type: "text", text }],
@@ -311,6 +329,7 @@ async function waitForDetachedForegroundRun(
 		if (signal?.aborted) {
 			return result(`Wait aborted after ${formatDuration(now() - startedAt)}. Remembered foreground run "${run.runId}" remains detached.`, true);
 		}
+		if (userSpoke(deps)) return userInterruptedResult(now() - startedAt, `foreground run "${run.runId}"`);
 		if (now() - startedAt >= timeoutMs) {
 			return result(
 				`Wait timed out after ${formatDuration(timeoutMs)} with remembered foreground run "${run.runId}" still detached. Reply to any pending supervisor request, then call subagent_wait({ id: "${run.runId}" }) again or inspect status; do not resume or launch a replacement while it remains detached.`,
@@ -408,6 +427,7 @@ export async function waitForSubagents(
 		if (signal?.aborted) {
 			return result(`Wait aborted after ${formatDuration(now() - startedAt)}. Still active: ${stillActive}.`, true);
 		}
+		if (userSpoke(deps)) return userInterruptedResult(now() - startedAt, stillActive);
 		if (now() - startedAt >= timeoutMs) {
 			return result(
 				`Wait timed out after ${formatDuration(timeoutMs)} with ${activeInitialRuns.length} async run(s) and ${activeInitialProviderItems.length} provider item(s) still active: ${stillActive}. The work keeps going; call subagent_wait again or inspect subagent status.`,

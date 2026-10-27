@@ -296,6 +296,34 @@ const SubagentParamsSchema = Type.Object({
 
 export const SubagentParams = keepTopLevelParameterDescriptions(SubagentParamsSchema);
 
+/**
+ * Parameters the parent model is not offered. The full schema stays for RPC,
+ * slash commands and fanout children; the model-facing tool hides modes that
+ * were almost never called (chain, worktree, schedule, watchdog settings,
+ * clarify, share) and duplicate aliases, because every request carries the
+ * schema.
+ */
+export const MODEL_HIDDEN_PARAMETERS = [
+	"chain", "chainDir", "chainName", "worktree", "schedule", "scheduleName", "clarify", "share",
+	"sessionDir", "scope", "target", "thinking", "runId", "dir", "includeProgress",
+] as const;
+
+const ModelSubagentParamsSchema = Type.Object({
+	...Type.Omit(SubagentParamsSchema, [...MODEL_HIDDEN_PARAMETERS, "action", "id", "view"]).properties,
+	action: Type.Optional(Type.String({
+		description: "Control or management action. Omit it to run agents (single or parallel).",
+	})),
+	id: Type.Optional(Type.String({
+		description: "Run id or prefix for action='status', 'interrupt', 'stop', 'resume' or 'steer'.",
+	})),
+	view: Type.Optional(Type.String({
+		enum: ["fleet", "transcript"],
+		description: "For action='status': 'fleet' lists active runs; 'transcript' with id (and optional index) tails a child's output.",
+	})),
+});
+
+export const ModelSubagentParams = keepTopLevelParameterDescriptions(ModelSubagentParamsSchema);
+
 const SubagentWaitParamsSchema = Type.Object({
 	id: Type.Optional(Type.String({
 		description: "Async run or remembered detached foreground run id/prefix to wait for one specific run. Omit to wait across every active async run started in this session.",

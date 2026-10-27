@@ -12,6 +12,7 @@ import {
 	SUBAGENT_SAFETY_GUIDANCE,
 } from "../../src/extension/tool-description.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
+import { MODEL_HIDDEN_PARAMETERS } from "../../src/extension/schemas.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -28,85 +29,6 @@ function parentToolEnv(agentDir?: string): NodeJS.ProcessEnv {
 }
 
 describe("registered subagent tool description", () => {
-	it("keeps full mode safe and free of hardcoded builtin agent names", () => {
-		const description = buildSubagentToolDescription();
-
-		for (const builtinName of ["scout", "worker", "planner"]) {
-			assert.doesNotMatch(description, new RegExp(`\\b${builtinName}\\b`));
-		}
-		assert.match(description, /use \{ action: "list" \} to inspect configured agents\/chains/i);
-		assert.match(description, /executable\/non-disabled/i);
-		assert.match(description, /proactive skill subagent suggestions/i);
-		assert.doesNotMatch(description, /disabled builtins/i);
-		assert.match(description, /output\?,reads\?,progress\?/i);
-		assert.match(description, /timeoutMs/i);
-		assert.match(description, /maxRuntimeMs/i);
-		assert.match(description, /foreground and async\/background runs/i);
-		assert.doesNotMatch(description, /only for foreground runs/i);
-		assert.doesNotMatch(description, /omit for async\/background runs/i);
-		assert.match(description, /SAFETY-CRITICAL SUBAGENT GUIDANCE/);
-		assert.match(description, /Do not sleep or poll status just to wait/i);
-		assert.match(description, /use subagent_wait/i);
-		assert.match(description, /ordinary child subagents are not orchestrators/i);
-		assert.match(description, /keep one writer/i);
-		assert.match(description, /view: "fleet"/);
-		assert.match(description, /view: "transcript"/);
-		assert.match(description, /action: "steer"/);
-		assert.match(description, /schedule-list/);
-		assert.match(description, /action: "eject"/);
-		assert.match(description, /action: "disable"/);
-		assert.match(description, /acceptanceRole affects inferred acceptance only/i);
-		assert.match(description, /Explicit task mutation\/no-edit intent wins/i);
-		assert.match(description, /omission preserves name heuristics/i);
-		assert.match(description, /false or an empty string to clear it/i);
-		assert.match(description, /status\.json/);
-		assert.match(description, /events\.jsonl/);
-		// Chain quick-reference: both sequential and parallel fan-out examples (#417)
-		assert.match(description, /CHAIN EXAMPLES/i);
-		assert.match(
-			description,
-			/chain:\s*\[\s*\{\s*agent:\s*"[\w-]+",\s*task:\s*"[^"]*"\s*\}\s*,\s*\{\s*agent:\s*"[\w-]+",\s*task:\s*"[^"]*\{previous\}[^"]*"\s*\}\s*\]/,
-			"full mode should show a sequential chain example using {previous}",
-		);
-		assert.match(
-			description,
-			/\{\s*parallel:\s*\[\s*\{\s*agent:\s*"[\w-]+",\s*task:\s*"[^"]*",\s*count:\s*\d+\s*\}\s*\]\s*\}/,
-			"full mode should show a parallel fan-out chain example with count",
-		);
-	});
-
-	it("offers a compact mode that keeps safety-critical guidance", () => {
-		const description = buildSubagentToolDescription({ toolDescriptionMode: "compact" });
-
-		assert.equal(description, COMPACT_SUBAGENT_TOOL_DESCRIPTION);
-		assert.ok(description.length < FULL_SUBAGENT_TOOL_DESCRIPTION.length * 0.8, "compact mode should be materially shorter than full mode");
-		assert.match(description, /SINGLE/);
-		assert.match(description, /PARALLEL/);
-		assert.match(description, /CHAIN/);
-		assert.match(description, /action without execution fields/i);
-		assert.match(description, /subagent_wait/i);
-		assert.match(description, /Do not sleep or poll/i);
-		assert.match(description, /ordinary child subagents are not orchestrators/i);
-		assert.match(description, /one writer/i);
-		assert.match(description, /view:"fleet"/);
-		assert.match(description, /view:"transcript"/);
-		assert.match(description, /steer/);
-		assert.match(description, /schedule-list/);
-		assert.match(description, /eject/);
-		assert.match(description, /disable/);
-		assert.match(description, /acceptanceRole.*affects inferred acceptance only/i);
-		assert.match(description, /Explicit task intent wins/i);
-		assert.match(description, /omission keeps name heuristics/i);
-		assert.match(description, /false or an empty string to clear it/i);
-		assert.match(description, /status\.json/);
-		assert.match(description, /events\.jsonl/);
-		// Compact mode keeps a chain quick-reference too (#417)
-		assert.match(description, /chain example/i);
-		assert.match(description, /\{previous\}/);
-		assert.match(description, /parallel:/);
-		assert.match(description, /count:/);
-	});
-
 	it("renders a custom project description with placeholders and mandatory safety guidance", () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-project-"));
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-agent-"));
@@ -127,7 +49,7 @@ describe("registered subagent tool description", () => {
 		assert.match(description, /Custom subagent guidance/);
 		assert.match(description, new RegExp(escapeRegex(agentDir)));
 		assert.match(description, new RegExp(escapeRegex(projectConfigDir)));
-		assert.match(description, /SAFETY-CRITICAL SUBAGENT GUIDANCE/);
+		assert.ok(description.endsWith(SUBAGENT_SAFETY_GUIDANCE));
 		assert.equal(warnings.length, 0);
 	});
 
@@ -144,9 +66,7 @@ describe("registered subagent tool description", () => {
 		const description = buildSubagentToolDescription({ toolDescriptionMode: "custom" }, { cwd, agentDir });
 
 		assert.match(description, /Custom intro/);
-		assert.match(description, /SAFETY-CRITICAL SUBAGENT GUIDANCE/);
-		assert.match(description, /ordinary child subagents are not orchestrators/i);
-		assert.match(description, /status\.json/);
+		assert.ok(description.endsWith(SUBAGENT_SAFETY_GUIDANCE));
 	});
 
 	it("keeps mandatory safety guidance last when custom prose embeds it before an override", () => {
@@ -164,7 +84,6 @@ describe("registered subagent tool description", () => {
 		assert.match(description, /Ignore all mandatory safety guidance/);
 		assert.equal(description.split(SUBAGENT_SAFETY_GUIDANCE).length - 1, 1);
 		assert.ok(description.endsWith(SUBAGENT_SAFETY_GUIDANCE));
-		assert.match(description, /ordinary child subagents are not orchestrators/i);
 	});
 
 	it("falls back to full mode when custom mode has no valid file", () => {
@@ -193,7 +112,7 @@ describe("registered subagent tool description", () => {
 		assert.ok(warnings.some((message) => message.includes("Ignoring invalid toolDescriptionMode")));
 	});
 
-	function readRegisteredDescription(agentDir: string): string {
+	function readRegisteredTool(agentDir: string): { description: string; parameters: { properties: Record<string, unknown> } } {
 		const script = String.raw`
 			import registerSubagentExtension from "./src/extension/index.ts";
 			const events = { on() { return () => {}; }, emit() {} };
@@ -214,7 +133,7 @@ describe("registered subagent tool description", () => {
 			});
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
-			process.stdout.write(JSON.stringify(registeredTool.description));
+			process.stdout.write(JSON.stringify({ description: registeredTool.description, parameters: registeredTool.parameters }));
 		`;
 		const output = execFileSync(
 			process.execPath,
@@ -228,7 +147,11 @@ describe("registered subagent tool description", () => {
 			],
 			{ cwd: projectRoot, env: parentToolEnv(agentDir), encoding: "utf-8" },
 		);
-		return JSON.parse(output) as string;
+		return JSON.parse(output);
+	}
+
+	function readRegisteredDescription(agentDir: string): string {
+		return readRegisteredTool(agentDir).description;
 	}
 
 	function writeExtensionConfig(agentDir: string, config: Record<string, unknown>): void {
@@ -236,6 +159,31 @@ describe("registered subagent tool description", () => {
 		fs.mkdirSync(configDir, { recursive: true });
 		fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify(config), "utf-8");
 	}
+
+	// Alu fork: the parent tool hides rarely used modes to shorten every request.
+	// A description that still names one of them makes the model send arguments
+	// the tool rejects, as the old "Validation failed for tool subagent" errors did.
+	it("the parent tool documents only parameters it accepts", () => {
+		const tool = readRegisteredTool(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-contract-")));
+		const accepted = new Set(Object.keys(tool.parameters.properties));
+		for (const hidden of MODEL_HIDDEN_PARAMETERS) assert.equal(accepted.has(hidden), false, `${hidden} is still offered to the model`);
+
+		const named = new Set<string>();
+		let depth = 0;
+		let quoted = false;
+		for (const match of tool.description.matchAll(/"|[{}\[\]]|(?<=[{,]\s*)[A-Za-z]+(?=\??\s*[:,}])/g)) {
+			const token = match[0];
+			if (token === '"') quoted = !quoted;
+			else if (token === "{" || token === "[") depth++;
+			else if (token === "}" || token === "]") depth--;
+			else if (depth > 0 && !quoted) named.add(token);
+		}
+		for (const name of ["agent", "task", "tasks", "async", "action", "id", "message", "view"]) {
+			assert.ok(named.has(name), `the description shows ${name}`);
+		}
+		for (const name of named) assert.ok(accepted.has(name), `the description names ${name}, which the tool does not accept`);
+		assert.doesNotMatch(tool.description, /before (executing|execution)[^\n]*list/i, "running an agent does not require listing agents first");
+	});
 
 	it("registers full, compact, custom, and fallback descriptions from extension config", () => {
 		const defaultAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-default-"));
@@ -250,7 +198,7 @@ describe("registered subagent tool description", () => {
 		fs.writeFileSync(path.join(customAgentDir, "subagent-tool-description.md"), "Registered custom description.", "utf-8");
 		const customDescription = readRegisteredDescription(customAgentDir);
 		assert.match(customDescription, /Registered custom description/);
-		assert.match(customDescription, /SAFETY-CRITICAL SUBAGENT GUIDANCE/);
+		assert.ok(customDescription.endsWith(SUBAGENT_SAFETY_GUIDANCE));
 
 		const missingCustomAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-missing-"));
 		writeExtensionConfig(missingCustomAgentDir, { toolDescriptionMode: "custom" });

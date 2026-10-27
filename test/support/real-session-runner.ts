@@ -36,6 +36,10 @@ export interface RealSessionRunOptions {
 	timeoutMs?: number;
 	projectFiles?: Record<string, string>;
 	reportChildTools?: boolean;
+	/** Runs after extensions are bound, before the prompt. */
+	beforePrompt?: (session: AgentSession) => void | Promise<void>;
+	/** Sees every parent session event while the prompt runs. */
+	onEvent?: (session: AgentSession, event: AgentSessionEvent) => void;
 }
 
 export interface RealSessionRun {
@@ -283,9 +287,11 @@ export async function runRealSubagentSession(options: RealSessionRunOptions): Pr
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				responseText += event.assistantMessageEvent.delta;
 			}
+			options.onEvent?.(session!, event);
 		});
 
 		await session.bindExtensions({});
+		await options.beforePrompt?.(session);
 		const timeoutMs = options.timeoutMs ?? 30_000;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {

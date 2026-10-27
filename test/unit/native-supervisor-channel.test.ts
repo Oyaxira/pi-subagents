@@ -136,7 +136,7 @@ describe("native supervisor channel", () => {
 		channel.start();
 		channel.dispose();
 
-		assert.deepEqual(registeredTools, [NATIVE_SUPERVISOR_TOOL_NAME, "intercom"]);
+		assert.deepEqual(registeredTools, [NATIVE_SUPERVISOR_TOOL_NAME], "the parent gets one reply tool, the one request notices name");
 		assert.deepEqual(sent.map((message) => message.details?.id), [matchingId]);
 		assert.equal(channel.pending.has(matchingId), false, "disposed channel clears pending requests");
 		assert.equal(sent.some((message) => message.details?.id === otherId), false);

@@ -4,6 +4,16 @@
 
 # pi-subagents
 
+> **Alu fork.** This fork is pinned for Alu's own Pi setup and is trimmed for what the parent model sees on every request:
+>
+> - The parent `subagent` tool offers single and parallel runs, background runs and run control. Chain, worktree, schedule, watchdog settings, clarify and share are hidden from the model (`MODEL_HIDDEN_PARAMETERS` in `src/extension/schemas.ts`); slash commands, RPC and fanout children keep the full schema.
+> - The tool description is short and no longer asks the model to list agents before every run. The bundled skill covers only the calls above.
+> - `subagent_wait` returns early when the user sends a message, so a waiting parent can answer; the runs keep going.
+> - The parent registers one supervisor reply tool, `subagent_supervisor`, not a second copy named `intercom`.
+> - The chain-only prompts `/parallel-context-build` and `/parallel-handoff-plan` are removed.
+>
+> The rest of this README is upstream's and still describes the hidden features.
+
 `pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
@@ -315,8 +325,6 @@ The package includes reusable prompt templates for common workflows. You do not 
 | `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
 | `/review-loop` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
 | `/parallel-research` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
-| `/parallel-context-build` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
 | `/gather-context-and-clarify` | Scout/research first, then ask the user the clarification questions that matter. |
 | `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
 

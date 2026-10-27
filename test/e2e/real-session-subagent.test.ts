@@ -13,6 +13,7 @@
 
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { tryImport } from "../support/helpers.ts";
@@ -47,6 +48,66 @@ describe("real Pi-session subagent E2E", { skip: !available ? "pi runtime packag
 		await run?.dispose();
 		run = undefined;
 	});
+
+	// A parent blocked in subagent_wait could not answer the user until the
+	// background run finished: the user's message sat in the queue for minutes.
+	// Pi TUI's Enter steers; Dock queues a message sent during a run as a follow-up.
+	for (const delivery of ["steer", "followUp"] as const) {
+		it(`a message the user sends (${delivery}) while the parent waits on a background run is answered without waiting for the run`, async () => {
+			const { runRealSubagentSession } = await import("../support/real-session-runner.ts");
+			const { ASYNC_DIR } = await import("../../src/shared/types.ts");
+			const { fauxToolCall } = await import("@earendil-works/pi-ai");
+			const runDir = path.join(ASYNC_DIR, `e2e-wait-${delivery}-${process.pid}-${Date.now()}`);
+			const question = "Quick question before the review finishes?";
+			const answer = "Answering the question while the review keeps running.";
+			const textOf = (content: unknown) => Array.isArray(content)
+				? content.map((part) => (part as { text?: string }).text ?? "").join("")
+				: String(content ?? "");
+			let waitResult = "";
+			let waits = 0;
+			try {
+				run = await runRealSubagentSession({
+					prompt: "Wait for the background reviewer.",
+					childText: CHILD_MARKER,
+					timeoutMs: 20_000,
+					beforePrompt: (session) => {
+						// A background run of this session that is still working.
+						const now = Date.now();
+						fs.mkdirSync(runDir, { recursive: true });
+						fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+							runId: path.basename(runDir), mode: "single", state: "running", startedAt: now, lastUpdate: now,
+							sessionId: session.sessionManager.getSessionFile() ?? session.sessionManager.getSessionId(),
+							pid: process.pid, steps: [{ agent: "reviewer", status: "running" }],
+						}));
+					},
+					onEvent: (session, event) => {
+						if (event.type === "tool_execution_start" && event.toolName === "subagent_wait") {
+							setTimeout(() => void session[delivery](question), 300);
+						}
+					},
+					respond: (context) => {
+						const messages = context.messages as Array<{ role?: string; toolName?: string; content?: unknown }>;
+						const waited = messages.filter((message) => message.role === "toolResult" && message.toolName === "subagent_wait");
+						if (waited.length === 0) {
+							waits++;
+							return fauxToolCall("subagent_wait", { timeoutMs: 120_000 }, { id: "call-wait" });
+						}
+						waitResult = textOf(waited[0]!.content);
+						const asked = messages.some((message) => message.role === "user" && textOf(message.content).includes(question));
+						// Until a follow-up is delivered the parent only knows that the user spoke.
+						return asked ? answer : "The review is still running; reading your message.";
+					},
+				});
+			} finally {
+				fs.rmSync(runDir, { recursive: true, force: true });
+			}
+
+			assert.equal(waits, 1);
+			assert.match(waitResult, /user sent a message/i);
+			assert.match(waitResult, new RegExp(path.basename(runDir)), "the wait says which run is still going");
+			assert.equal(run.responseText, answer, "the parent answers the user's question");
+		});
+	}
 
 	it("loads requested extension tools in direct and chain children and diagnoses missing providers", async () => {
 		const { runRealSubagentSession, subagentCall, subagentToolResults } = await import("../support/real-session-runner.ts");

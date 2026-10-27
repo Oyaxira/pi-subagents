@@ -596,9 +596,10 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 	let poller: ReturnType<typeof setInterval> | undefined;
 	let lastStaleCleanupAt = 0;
 
+	// One reply tool: request notices name it. A second copy under the name
+	// `intercom` only added its schema to every parent request.
 	const registerParentTools = (): void => {
 		if (!hasTool(pi, NATIVE_SUPERVISOR_TOOL_NAME)) pi.registerTool(buildParentIntercomTool(pending, state, NATIVE_SUPERVISOR_TOOL_NAME));
-		if (!hasTool(pi, "intercom")) pi.registerTool(buildParentIntercomTool(pending, state));
 	};
 
 	const cleanupStaleChannelsIfDue = (): void => {
